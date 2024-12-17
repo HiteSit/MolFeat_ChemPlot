@@ -20,3 +20,6 @@ build/
 
 # tox output
 *.tox
+
+# vscode
+.vscode

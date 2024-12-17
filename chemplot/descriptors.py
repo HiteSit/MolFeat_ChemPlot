@@ -207,7 +207,7 @@ def select_descriptors(df_descriptors, target_list, method="lasso", target_type=
     :rtype: tuple(DataFrame, list)
     """
     # If no target list is provided, return all descriptors
-    if not target_list:
+    if target_list is None or (isinstance(target_list, (list, np.ndarray)) and len(target_list) == 0):
         return df_descriptors, []
     
     # Handle empty dataframe
