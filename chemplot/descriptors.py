@@ -132,7 +132,7 @@ def get_molfeat_descriptors(smiles_list, target_list, **kwargs):
     :rtype: tuple(list, DataFrame, list)
     """
     fp_type = kwargs.get("fp_type", "ecfp")
-    n_jobs = kwargs.get("n_jobs", -1)
+    n_jobs = kwargs.get("n_jobs", 1)
     
     if fp_type not in FP_FUNCS.keys():
         raise ValueError(f"Unknown fingerprint type: {fp_type}. Available options: {list(FP_FUNCS.keys())}")
