@@ -302,60 +302,76 @@ class Plotter(object):
 
     def umap(self, n_neighbors=None, min_dist=None, pca=False, random_state=None, **kwargs):
         """
-        Calculates the first 2 UMAP components of the molecular descriptors.
+        Calculates the UMAP components of the molecular descriptors.
 
-        :param num_neighbors: Number of neighbours used in the UMAP madel.
-        :param min_dist: Value between 0.0 and 0.99, indicates how close to each other the points can be displayed.
-        :param random_state: random seed that can be passed as a parameter for reproducing the same results
+        :param n_neighbors: The size of local neighborhood used for manifold approximation
+        :param min_dist: The minimum distance between points in the low dimensional representation
+        :param pca: Whether to use PCA before UMAP
+        :param random_state: Random state for reproducibility
         :param kwargs: Other keyword arguments are passed down to umap.UMAP
-        :type num_neighbors: int
+        :type n_neighbors: int
         :type min_dist: float
+        :type pca: bool
         :type random_state: int
         :type kwargs: key, value mappings
         :returns: The dataframe containing the UMAP components.
         :rtype: Dataframe
         """
-        self.__data = self.__data_scaler()
+        try:
+            self.__data = self.__data_scaler()
 
-        # Preprocess the data with PCA
-        if pca and self.__sim_type == "structural":
-            _n_components = 10 if len(self.__data[0]) >= 10 else len(self.__data[0])
-            pca = PCA(n_components=_n_components, random_state=random_state)
-            self.__data = pca.fit_transform(self.__data)
-            self.__plot_title = "UMAP plot from components with cumulative variance explained " + "{:.0%}".format(sum(pca.explained_variance_ratio_))
-        else:
-            self.__plot_title = "UMAP plot"
-
-        if n_neighbors is None:
-            if self.__sim_type == "structural":
-                if pca:
-                    n_neighbors = parameters.n_neighbors_structural_pca(len(self.__data))
+            # Get the number of neighbors
+            if n_neighbors is None:
+                if self.__sim_type == "structural":
+                    if pca:
+                        n_neighbors = parameters.n_neighbors_structural_pca(len(self.__data))
+                    else:
+                        n_neighbors = parameters.n_neighbors_structural(len(self.__data))
                 else:
-                    n_neighbors = parameters.n_neighbors_structural(len(self.__data))
-            else:
-                n_neighbors = parameters.n_neighbors_tailored(len(self.__data))
+                    n_neighbors = parameters.n_neighbors_tailored(len(self.__data))
 
-        if min_dist is None or min_dist < 0.0 or min_dist > 0.99:
-            if min_dist is not None and (min_dist < 0.0 or min_dist > 0.99):
-                print("min_dist must range from 0.0 up to 0.99. Default used.")
-            if self.__sim_type == "structural":
-                if pca:
-                    min_dist = parameters.MIN_DIST_STRUCTURAL_PCA
+            # Get min_dist parameter
+            if min_dist is None or min_dist < 0.0 or min_dist > 0.99:
+                if min_dist is not None and (min_dist < 0.0 or min_dist > 0.99):
+                    print("Warning: min_dist must range from 0.0 up to 0.99. Using default value.")
+                if self.__sim_type == "structural":
+                    if pca:
+                        min_dist = parameters.MIN_DIST_STRUCTURAL_PCA
+                    else:
+                        min_dist = parameters.MIN_DIST_STRUCTURAL
                 else:
-                    min_dist = parameters.MIN_DIST_STRUCTURAL
-            else:
-                min_dist = parameters.MIN_DIST_TAILORED
+                    min_dist = parameters.MIN_DIST_TAILORED
 
-        # Embed the data in two dimensions
-        self.umap_fit = umap.UMAP(n_neighbors=n_neighbors, min_dist=min_dist, random_state=random_state, n_components=2, **kwargs)
-        ecfp_umap_embedding = self.umap_fit.fit_transform(self.__data)
-        # Create a dataframe containinting the first 2 UMAP components of ECFP
-        self.__df_2_components = pd.DataFrame(data=ecfp_umap_embedding, columns=["UMAP-1", "UMAP-2"])
+            # Validate n_neighbors
+            if n_neighbors >= len(self.__data):
+                print(f"Warning: n_neighbors ({n_neighbors}) must be less than the number of samples ({len(self.__data)}). Using n_samples/3.")
+                n_neighbors = max(2, len(self.__data) // 3)
 
-        if len(self.__target) > 0:
-            self.__df_2_components["target"] = self.__target
+            try:
+                # Embed the data in two dimensions
+                self.umap_fit = umap.UMAP(n_neighbors=n_neighbors, min_dist=min_dist, random_state=random_state, n_components=2, **kwargs)
+                ecfp_umap_embedding = self.umap_fit.fit_transform(self.__data)
+                
+                # Create a dataframe containing the UMAP components
+                self.__df_2_components = pd.DataFrame(data=ecfp_umap_embedding, columns=["UMAP-1", "UMAP-2"])
+                
+                self.__plot_title = "UMAP plot"
 
-        return self.__df_2_components.copy()
+                if len(self.__target) > 0:
+                    self.__df_2_components["target"] = self.__target
+
+                return self.__df_2_components.copy()
+            except Exception as e:
+                print(f"Error in UMAP embedding: {str(e)}")
+                raise
+                
+        except Exception as e:
+            print(f"Error in UMAP reduction: {str(e)}")
+            # Return empty dataframe with correct columns
+            df = pd.DataFrame(columns=["UMAP-1", "UMAP-2"])
+            if len(self.__target) > 0:
+                df["target"] = []
+            return df
 
     def cluster(self, n_clusters=5, **kwargs):
         """

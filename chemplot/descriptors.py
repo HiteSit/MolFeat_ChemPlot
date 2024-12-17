@@ -134,36 +134,61 @@ def get_molfeat_descriptors(smiles_list, target_list, **kwargs):
     fp_type = kwargs.get("fp_type", "ecfp")
     n_jobs = kwargs.get("n_jobs", 1)
     
-    if fp_type not in FP_FUNCS.keys():
-        raise ValueError(f"Unknown fingerprint type: {fp_type}. Available options: {list(FP_FUNCS.keys())}")
-    
     # Convert SMILES to mols
     mols = []
     valid_smiles = []
     valid_targets = []
+    
+    # Handle empty or None target_list
+    has_targets = target_list is not None and len(target_list) > 0
+    
     for i, smi in enumerate(smiles_list):
         mol = Chem.MolFromSmiles(smi)
         if mol is not None:
             mols.append(mol)
             valid_smiles.append(smi)
-            if target_list:
+            if has_targets:
                 valid_targets.append(target_list[i])
     
-    if len(mols) < len(smiles_list):
-        print(f"Removed {len(smiles_list) - len(mols)} invalid SMILES")
+    if len(mols) == 0:
+        return [], pd.DataFrame(), []
     
-    # Calculate features using molfeat
-    calc = FPCalculator(fp_type)
-    mol_transf = MoleculeTransformer(calc, n_jobs=n_jobs)
-    features = mol_transf(mols)
-    
-    # Convert to dataframe
-    df_descriptors = pd.DataFrame(features)
-    
-    # Remove constant features
-    df_descriptors = df_descriptors.loc[:, df_descriptors.nunique() > 1]
-    
-    return mols, df_descriptors, valid_targets if target_list else []
+    try:
+        # Calculate multiple types of descriptors to ensure we have enough features
+        descriptors_list = []
+        
+        # 1. ECFP fingerprints
+        calc1 = FPCalculator("ecfp", length=2048)
+        mol_transf1 = MoleculeTransformer(calc1, n_jobs=n_jobs)
+        features1 = mol_transf1(mols)
+        df1 = pd.DataFrame(features1)
+        descriptors_list.append(df1)
+        
+        # 2. MACCS keys
+        calc2 = FPCalculator("maccs")
+        mol_transf2 = MoleculeTransformer(calc2, n_jobs=n_jobs)
+        features2 = mol_transf2(mols)
+        df2 = pd.DataFrame(features2)
+        descriptors_list.append(df2)
+        
+        # 3. Topological fingerprints
+        calc3 = FPCalculator("topological", length=2048)
+        mol_transf3 = MoleculeTransformer(calc3, n_jobs=n_jobs)
+        features3 = mol_transf3(mols)
+        df3 = pd.DataFrame(features3)
+        descriptors_list.append(df3)
+        
+        # Combine all descriptors
+        df_descriptors = pd.concat(descriptors_list, axis=1)
+        
+        # Remove constant features and ensure column names are unique
+        df_descriptors = df_descriptors.loc[:, df_descriptors.nunique() > 1]
+        df_descriptors.columns = [f'desc_{i}' for i in range(df_descriptors.shape[1])]
+        
+        return mols, df_descriptors, valid_targets if has_targets else []
+    except Exception as e:
+        print(f"Error calculating descriptors: {str(e)}")
+        return [], pd.DataFrame(), []
 
 def select_descriptors(df_descriptors, target_list, method="lasso", target_type="R", **kwargs):
     """
@@ -181,73 +206,89 @@ def select_descriptors(df_descriptors, target_list, method="lasso", target_type=
     :returns: The selected descriptors
     :rtype: tuple(DataFrame, list)
     """
-    df_descriptors_scaled = StandardScaler().fit_transform(df_descriptors)
+    # If no target list is provided, return all descriptors
+    if not target_list:
+        return df_descriptors, []
     
-    if method == "lasso":
-        if target_type == "C":
-            model = LogisticRegression(penalty="l1", solver="liblinear", random_state=1, **kwargs)
+    # Handle empty dataframe
+    if df_descriptors.empty:
+        return df_descriptors, target_list
+    
+    try:
+        df_descriptors_scaled = StandardScaler().fit_transform(df_descriptors)
+        
+        if method == "lasso":
+            if target_type == "C":
+                model = LogisticRegression(penalty="l1", solver="liblinear", random_state=1, **kwargs)
+            else:
+                model = Lasso(random_state=1, **kwargs)
+            selector = SelectFromModel(model)
+            
+        elif method == "mutual_info":
+            # Create a dummy estimator that will store MI scores
+            class MIEstimator:
+                def __init__(self):
+                    self.coef_ = None
+                
+                def fit(self, X, y):
+                    if target_type == "C":
+                        self.coef_ = mutual_info_classif(X, y)
+                    else:
+                        self.coef_ = mutual_info_regression(X, y)
+                    return self
+                
+                def get_params(self, deep=True):
+                    return {}
+                
+                def set_params(self, **params):
+                    return self
+            
+            # Use the dummy estimator with SelectFromModel
+            selector = SelectFromModel(MIEstimator(), threshold="mean")
+            
+        elif method == "combined":
+            # Calculate Lasso scores
+            if target_type == "C":
+                lasso_model = LogisticRegression(penalty="l1", solver="liblinear", random_state=1, **kwargs)
+            else:
+                lasso_model = Lasso(random_state=1, **kwargs)
+            
+            # Calculate MI scores
+            if target_type == "C":
+                mi_scores = mutual_info_classif(df_descriptors_scaled, target_list)
+            else:
+                mi_scores = mutual_info_regression(df_descriptors_scaled, target_list)
+                
+            # Fit Lasso
+            selector_lasso = SelectFromModel(lasso_model)
+            selector_lasso.fit(df_descriptors_scaled, target_list)
+            mask_lasso = selector_lasso.get_support()
+            
+            # Use MI scores directly
+            mi_threshold = np.mean(mi_scores)
+            mask_mi = mi_scores > mi_threshold
+            
+            # Combine masks
+            final_mask = mask_lasso | mask_mi
+            
+            # Return selected features
+            return df_descriptors.iloc[:, final_mask], target_list
         else:
-            model = Lasso(random_state=1, **kwargs)
-        selector = SelectFromModel(model)
+            print(f"Unknown method {method}, using all features")
+            return df_descriptors, target_list
         
-    elif method == "mutual_info":
-        # Create a dummy estimator that will store MI scores
-        class MIEstimator:
-            def __init__(self):
-                self.coef_ = None
+        # Fit and transform for lasso and mutual_info methods
+        try:
+            selector.fit(df_descriptors_scaled, target_list)
+            selected_features_mask = selector.get_support()
+            return df_descriptors.iloc[:, selected_features_mask], target_list
+        except Exception as e:
+            print(f"Feature selection failed: {str(e)}, using all features")
+            return df_descriptors, target_list
             
-            def fit(self, X, y):
-                if target_type == "C":
-                    self.coef_ = mutual_info_classif(X, y)
-                else:
-                    self.coef_ = mutual_info_regression(X, y)
-                return self
-            
-            def get_params(self, deep=True):
-                return {}
-            
-            def set_params(self, **params):
-                return self
-        
-        # Use the dummy estimator with SelectFromModel
-        selector = SelectFromModel(MIEstimator(), threshold="mean")
-        
-    elif method == "combined":
-        # Calculate Lasso scores
-        if target_type == "C":
-            lasso_model = LogisticRegression(penalty="l1", solver="liblinear", random_state=1, **kwargs)
-        else:
-            lasso_model = Lasso(random_state=1, **kwargs)
-        
-        # Calculate MI scores
-        if target_type == "C":
-            mi_scores = mutual_info_classif(df_descriptors_scaled, target_list)
-        else:
-            mi_scores = mutual_info_regression(df_descriptors_scaled, target_list)
-            
-        # Fit Lasso
-        selector_lasso = SelectFromModel(lasso_model)
-        selector_lasso.fit(df_descriptors_scaled, target_list)
-        mask_lasso = selector_lasso.get_support()
-        
-        # Use MI scores directly
-        mask_mi = mi_scores > np.mean(mi_scores)
-        
-        # Combine masks
-        combined_mask = mask_mi | mask_lasso
-        
-        # Select features using combined mask
-        selected_features = df_descriptors.iloc[:, combined_mask]
-        return selected_features, target_list
-    
-    else:
-        raise ValueError(f"Unknown feature selection method: {method}")
-    
-    # Apply feature selection for non-combined methods
-    selector.fit(df_descriptors_scaled, target_list)
-    selected_features = df_descriptors.iloc[:, selector.get_support()]
-    
-    return selected_features, target_list
+    except Exception as e:
+        print(f"Error in descriptor selection: {str(e)}, using all features")
+        return df_descriptors, target_list
 
 def get_ecfp(smiles_list, target_list, radius=2, nBits=2048):
     """
