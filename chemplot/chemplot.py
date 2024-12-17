@@ -79,25 +79,24 @@ class Plotter(object):
 
     _target_types = {"R", "C"}
 
-    def __init__(self, encoding_list, target, target_type, sim_type, get_desc, get_fingerprints):
+    def __init__(self, encoding_list, target, target_type, sim_type, get_desc, get_fingerprints, fp_type="ecfp", feature_selection="lasso"):
         # Error handeling sym_type
         if sim_type not in self._sim_types:
             if len(target) > 0:
-                self.__sim_type = "tailored"
+                sim_type = "tailored"
                 print(
                     "sim_type indicates the similarity type by which the plots are constructed.\n"
                     + "The supported similarity types are structural and tailored.\n"
                     + "Because a target list has been provided 'tailored' as been selected as sym_type."
                 )
             else:
-                self.__sim_type = "structural"
+                sim_type = "structural"
                 print(
                     "sim_type indicates the similarity type by which the plots are constructed.\n"
                     + "The supported similarity types are structural and tailored.\n"
                     + "Because no target list has been provided 'structural' as been selected as sym_type."
                 )
-        else:
-            self.__sim_type = sim_type
+        self.__sim_type = sim_type
 
         if self.__sim_type != "structural" and len(target) == 0:
             raise Exception("Target values missing")
@@ -142,10 +141,10 @@ class Plotter(object):
 
         # Instantiate Plotter class
         if self.__sim_type == "tailored":
-            self.__mols, df_descriptors, target = get_desc(encoding_list, target)
+            self.__mols, df_descriptors, target = get_desc(encoding_list, target, fp_type=fp_type)
             if df_descriptors.empty:
                 raise Exception("Descriptors could not be computed for given molecules")
-            self.__df_descriptors, self.__target = desc.select_descriptors_lasso(df_descriptors, target, kind=self.__target_type)
+            self.__df_descriptors, self.__target = desc.select_descriptors(df_descriptors, target, method=feature_selection, target_type=self.__target_type)
         elif self.__sim_type == "structural":
             self.__mols, self.__df_descriptors, self.__target = get_fingerprints(encoding_list, target, 2, 2048)
 
@@ -156,7 +155,7 @@ class Plotter(object):
         self.__plot_title = None
 
     @classmethod
-    def from_smiles(cls, smiles_list, target=[], target_type=None, sim_type=None):
+    def from_smiles(cls, smiles_list, target=[], target_type=None, sim_type=None, fp_type="ecfp", feature_selection="lasso"):
         """
         Class method to construct a Plotter object from a list of SMILES.
 
@@ -164,18 +163,31 @@ class Plotter(object):
         :param target: target values
         :param target_type: target type R (regression) or C (classificatino)
         :param sim_type: similarity type structural or tailored
+        :param fp_type: Type of fingerprint to use for tailored similarity
+        :param feature_selection: method for feature selection ('lasso', 'mutual_info', or 'combined')
         :type smile_list: list
         :type target: list
         :type target_type: string
         :type sim_type: string
+        :type fp_type: string
+        :type feature_selection: string
         :returns: A Plotter object for the molecules given as input.
         :rtype: Plotter
         """
 
-        return cls(smiles_list, target, target_type, sim_type, desc.get_mordred_descriptors, desc.get_ecfp)
+        # Set default sim_type based on whether target is provided
+        if sim_type is None:
+            sim_type = "tailored" if len(target) > 0 else "structural"
+
+        if fp_type == "mordred":
+            return cls(smiles_list, target, target_type, sim_type, desc.get_mordred_descriptors, desc.get_ecfp,
+                     fp_type=fp_type, feature_selection=feature_selection)
+        else:
+            return cls(smiles_list, target, target_type, sim_type, desc.get_molfeat_descriptors, desc.get_ecfp,
+                     fp_type=fp_type, feature_selection=feature_selection)
 
     @classmethod
-    def from_inchi(cls, inchi_list, target=[], target_type=None, sim_type=None):
+    def from_inchi(cls, inchi_list, target=[], target_type=None, sim_type=None, fp_type="ecfp", feature_selection="lasso"):
         """
         Class method to construct a Plotter object from a list of InChi.
 
@@ -187,11 +199,24 @@ class Plotter(object):
         :type target_type: string
         :param sim_type: similarity type structural or tailored
         :type sim_type: string
+        :param fp_type: Type of fingerprint to use for tailored similarity
+        :type fp_type: string
+        :param feature_selection: method for feature selection ('lasso', 'mutual_info', or 'combined')
+        :type feature_selection: string
         :returns: A Plotter object for the molecules given as input.
         :rtype: Plotter
         """
 
-        return cls(inchi_list, target, target_type, sim_type, desc.get_mordred_descriptors_from_inchi, desc.get_ecfp_from_inchi)
+        # Set default sim_type based on whether target is provided
+        if sim_type is None:
+            sim_type = "tailored" if len(target) > 0 else "structural"
+
+        if fp_type == "mordred":
+            return cls(inchi_list, target, target_type, sim_type, desc.get_mordred_descriptors_from_inchi, desc.get_ecfp_from_inchi,
+                     fp_type=fp_type, feature_selection=feature_selection)
+        else:
+            return cls(inchi_list, target, target_type, sim_type, desc.get_molfeat_descriptors, desc.get_ecfp_from_inchi,
+                     fp_type=fp_type, feature_selection=feature_selection)
 
     def pca(self, **kwargs):
         """
