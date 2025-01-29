@@ -230,6 +230,16 @@ class Plotter(object):
 
         return cls(inchi_list, target, target_type, sim_type, desc.get_mordred_descriptors_from_inchi, desc.get_ecfp_from_inchi, fp)
 
+    def get_features_df(self):
+        """
+        Get the features dataframe directly from the Plotter instance.
+        This is a utility method that returns just the fingerprint/descriptor dataframe.
+
+        :returns: DataFrame containing the molecular features
+        :rtype: pandas.DataFrame
+        """
+        return self.__df_descriptors.copy()
+
     def pca(self, **kwargs):
         """
         Calculates the first 2 PCA components of the molecular descriptors.
