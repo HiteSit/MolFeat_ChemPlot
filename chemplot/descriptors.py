@@ -9,6 +9,7 @@ import math
 import mordred
 import numpy as np
 import pandas as pd
+import datamol as dm
 from mordred import Calculator, descriptors  # Dont remove these imports
 from rdkit import Chem
 from rdkit.Chem import AllChem
@@ -254,3 +255,102 @@ def generate_ecfp(encoding_list, encoding_function, encoding_name, target_list, 
     df_ecfp_fingerprints = df_ecfp_fingerprints.loc[:, (df_ecfp_fingerprints != 1).any(axis=0)]
 
     return mols, df_ecfp_fingerprints, target_list
+
+
+def get_custom_fingerprint(encoding_list, encoding_function, encoding_name, target_list, fp_type="ecfp"):
+    """
+    Calculates custom fingerprints using datamol for given list of molecules encodings
+
+    :param encoding_list: List of molecules encodings
+    :param encoding_function: Function used to extract the molecules from the encodings
+    :param encoding_name: Name of the encoding type (e.g. "SMILES", "InChi")
+    :param target_list: List of target values
+    :param fp_type: Type of fingerprint to compute (default: "ecfp")
+    :type encoding_list: list
+    :type encoding_function: fun
+    :type encoding_name: str
+    :type target_list: list
+    :type fp_type: str
+    :returns: The calculated fingerprints for the given molecules encodings
+    :rtype: tuple(list, DataFrame, list)
+    """
+    mols = []
+    erroneous_encodings = []
+    valid_mols = []
+    
+    # Convert molecules
+    for encoding in encoding_list:
+        mol = encoding_function(encoding)
+        if mol is None:
+            erroneous_encodings.append(encoding)
+        else:
+            mol = Chem.AddHs(mol)
+            valid_mols.append(mol)
+            mols.append(mol)
+
+    # Print errors if any
+    if len(erroneous_encodings) > 0:
+        print(
+            "The following erroneous {} have been found in the data:\n{}.\nThe erroneous {} will be removed from the data.".format(
+                encoding_name, "\n".join(map(str, erroneous_encodings)), encoding_name
+            )
+        )
+
+    # Calculate fingerprints using datamol
+    fp_list = [dm.to_fp(x, fp_type=fp_type) for x in valid_mols]
+    df_fingerprints = pd.DataFrame(fp_list)
+
+    # Handle target list
+    if len(target_list) > 0:
+        if not isinstance(target_list, list):
+            target_list = target_list.values
+        df_fingerprints = df_fingerprints.assign(target=target_list)
+        df_fingerprints = df_fingerprints.dropna(how="any")
+        target_list = df_fingerprints["target"].to_list()
+        df_fingerprints = df_fingerprints.drop(columns=["target"])
+
+    # Remove columns with no variability
+    df_fingerprints = df_fingerprints.loc[:, (df_fingerprints != 0).any(axis=0)]
+    df_fingerprints = df_fingerprints.loc[:, (df_fingerprints != 1).any(axis=0)]
+
+    return mols, df_fingerprints, target_list
+
+
+def select_fingerprint_features(df_fingerprints, target_list, R_select=0.05, C_select=0.3, kind="R"):
+    """
+    Selects fingerprint features using the same LASSO approach as for mordred descriptors
+
+    :param df_fingerprints: fingerprints of molecules
+    :param target_list: list of target values
+    :param R_select: alpha value for Lasso
+    :param C_select: C value for LogisticRegression
+    :param kind: kind of target R->Regression C->Classification
+    :type df_fingerprints: Dataframe
+    :type target_list: list
+    :type R_select: float
+    :type C_select: float
+    :type kind: string
+    :returns: The selected fingerprint features
+    :rtype: Dataframe
+    """
+    # Use the same feature selection approach as for mordred descriptors
+    df_fingerprints_scaled = StandardScaler().fit_transform(df_fingerprints)
+
+    if kind == "C":
+        model = LogisticRegression(C=C_select, penalty="l1", solver="liblinear", random_state=1).fit(df_fingerprints_scaled, target_list)
+    else:
+        model = Lasso(alpha=R_select, max_iter=10000, random_state=1).fit(df_fingerprints_scaled, target_list)
+
+    selected = SelectFromModel(model, prefit=True)
+    X_new_lasso = selected.transform(df_fingerprints)
+    if X_new_lasso.size > 0:
+        # Get back the kept features as a DataFrame with dropped columns as all 0s
+        selected_features = pd.DataFrame(selected.inverse_transform(X_new_lasso), index=df_fingerprints.index, columns=df_fingerprints.columns)
+        # Dropped columns have values of all 0s, keep other columns
+        selected_columns_lasso = selected_features.columns[selected_features.var() != 0]
+        selected_data = df_fingerprints[selected_columns_lasso]
+    else:
+        # No features were selected
+        selected_data = df_fingerprints
+
+    return selected_data, target_list

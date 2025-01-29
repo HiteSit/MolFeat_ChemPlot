@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import umap
+from rdkit import Chem
 from bokeh.io import output_file, save, show
 from bokeh.models import ColorBar, HoverTool, TabPanel, Tabs
 from bokeh.models.mappers import LinearColorMapper
@@ -28,6 +29,7 @@ from sklearn.preprocessing import StandardScaler
 
 import chemplot.descriptors as desc
 import chemplot.parameters as parameters
+import datamol as dm
 
 
 def calltracker(func):
@@ -79,7 +81,16 @@ class Plotter(object):
 
     _target_types = {"R", "C"}
 
-    def __init__(self, encoding_list, target, target_type, sim_type, get_desc, get_fingerprints):
+    def __init__(self, encoding_list, target, target_type, sim_type, get_desc, get_fingerprints, fp="ecfp"):
+        # Validate fingerprint type
+        if fp != "mordred" and fp != "ecfp":
+            supported_fps = dm.list_supported_fingerprints().keys()
+            if fp not in supported_fps:
+                raise ValueError(
+                    f"Fingerprint type '{fp}' not supported. Must be one of: "
+                    f"'mordred', 'ecfp', or one of the datamol fingerprints: {list(supported_fps)}"
+                )
+
         # Error handeling sym_type
         if sim_type not in self._sim_types:
             if len(target) > 0:
@@ -142,12 +153,34 @@ class Plotter(object):
 
         # Instantiate Plotter class
         if self.__sim_type == "tailored":
-            self.__mols, df_descriptors, target = get_desc(encoding_list, target)
-            if df_descriptors.empty:
-                raise Exception("Descriptors could not be computed for given molecules")
-            self.__df_descriptors, self.__target = desc.select_descriptors_lasso(df_descriptors, target, kind=self.__target_type)
-        elif self.__sim_type == "structural":
-            self.__mols, self.__df_descriptors, self.__target = get_fingerprints(encoding_list, target, 2, 2048)
+            if fp == "mordred":
+                # Use mordred descriptors with target values for feature selection
+                self.__mols, df_descriptors, target = get_desc(encoding_list, target)
+                if df_descriptors.empty:
+                    raise Exception("Descriptors could not be computed for given molecules")
+                self.__df_descriptors, self.__target = desc.select_descriptors_lasso(df_descriptors, target, kind=self.__target_type)
+            elif fp == "ecfp":
+                # Use ECFP with target values and feature selection
+                self.__mols, df_fingerprints, target = get_fingerprints(encoding_list, target, 2, 2048)
+                self.__df_descriptors, self.__target = desc.select_fingerprint_features(df_fingerprints, target, kind=self.__target_type)
+            else:
+                # Use custom fingerprint with target values and feature selection
+                self.__mols, df_fingerprints, target = desc.get_custom_fingerprint(encoding_list, Chem.MolFromSmiles, "SMILES", target, fp_type=fp)
+                self.__df_descriptors, self.__target = desc.select_fingerprint_features(df_fingerprints, target, kind=self.__target_type)
+        else:  # structural mode - don't use target values
+            if fp == "mordred":
+                # Use mordred descriptors without target values
+                self.__mols, df_descriptors, _ = get_desc(encoding_list, [])
+                if df_descriptors.empty:
+                    raise Exception("Descriptors could not be computed for given molecules")
+                self.__df_descriptors = df_descriptors
+                self.__target = []
+            elif fp == "ecfp":
+                # Use ECFP without target values
+                self.__mols, self.__df_descriptors, self.__target = get_fingerprints(encoding_list, [], 2, 2048)
+            else:
+                # Use custom fingerprint without target values
+                self.__mols, self.__df_descriptors, self.__target = desc.get_custom_fingerprint(encoding_list, Chem.MolFromSmiles, "SMILES", [], fp_type=fp)
 
         if len(self.__mols) < 2 or len(self.__df_descriptors.columns) < 2:
             raise Exception("Plotter object cannot be instantiated for given molecules")
@@ -156,7 +189,7 @@ class Plotter(object):
         self.__plot_title = None
 
     @classmethod
-    def from_smiles(cls, smiles_list, target=[], target_type=None, sim_type=None):
+    def from_smiles(cls, smiles_list, target=[], target_type=None, sim_type=None, fp="ecfp"):
         """
         Class method to construct a Plotter object from a list of SMILES.
 
@@ -164,18 +197,20 @@ class Plotter(object):
         :param target: target values
         :param target_type: target type R (regression) or C (classificatino)
         :param sim_type: similarity type structural or tailored
+        :param fp: fingerprint type to use (default: "ecfp", can be any fingerprint supported by datamol or "mordred")
         :type smile_list: list
         :type target: list
         :type target_type: string
         :type sim_type: string
+        :type fp: string
         :returns: A Plotter object for the molecules given as input.
         :rtype: Plotter
         """
 
-        return cls(smiles_list, target, target_type, sim_type, desc.get_mordred_descriptors, desc.get_ecfp)
+        return cls(smiles_list, target, target_type, sim_type, desc.get_mordred_descriptors, desc.get_ecfp, fp)
 
     @classmethod
-    def from_inchi(cls, inchi_list, target=[], target_type=None, sim_type=None):
+    def from_inchi(cls, inchi_list, target=[], target_type=None, sim_type=None, fp="ecfp"):
         """
         Class method to construct a Plotter object from a list of InChi.
 
@@ -187,11 +222,13 @@ class Plotter(object):
         :type target_type: string
         :param sim_type: similarity type structural or tailored
         :type sim_type: string
+        :param fp: fingerprint type to use (default: "ecfp", can be any fingerprint supported by datamol or "mordred")
+        :type fp: string
         :returns: A Plotter object for the molecules given as input.
         :rtype: Plotter
         """
 
-        return cls(inchi_list, target, target_type, sim_type, desc.get_mordred_descriptors_from_inchi, desc.get_ecfp_from_inchi)
+        return cls(inchi_list, target, target_type, sim_type, desc.get_mordred_descriptors_from_inchi, desc.get_ecfp_from_inchi, fp)
 
     def pca(self, **kwargs):
         """
